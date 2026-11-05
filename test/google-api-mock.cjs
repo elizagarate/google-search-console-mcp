@@ -27,12 +27,19 @@ Gaxios.prototype.request = async function (options) {
     }
     data = { access_token: 'fake-access-token', token_type: 'Bearer', expires_in: 3600 };
   } else if (url === 'https://searchconsole.googleapis.com/webmasters/v3/sites') {
-    const headers = Object.fromEntries(Object.entries(options.headers).map(([k, v]) => [k.toLowerCase(), v]));
+    // gaxios 8 usa Headers; versiones anteriores, objeto plano
+    const raw = typeof options.headers?.entries === 'function' ? [...options.headers.entries()] : Object.entries(options.headers || {});
+    const headers = Object.fromEntries(raw.map(([k, v]) => [k.toLowerCase(), v]));
     assert.equal(headers.authorization, 'Bearer fake-access-token');
     if (process.env.GSC_TEST_AUTH === 'adc') {
       assert.equal(headers['x-goog-user-project'], 'test-quota-project');
     }
     data = { siteEntry: [{ siteUrl: 'sc-domain:example.com', permissionLevel: 'siteRestrictedUser' }] };
+  } else if (url.endsWith('/searchAnalytics/query')) {
+    // Devuelve el cuerpo recibido para que el test compruebe la petición
+    const body = typeof options.data === 'string' ? JSON.parse(options.data) : options.data;
+    process.env.GSC_TEST_LAST_BODY = JSON.stringify(body);
+    data = { rows: [{ keys: [JSON.stringify(body)], clicks: 1, impressions: 10, ctr: 0.1, position: 2 }] };
   } else {
     throw new Error(`Unexpected network request in offline test: ${url}`);
   }

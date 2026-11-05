@@ -20,6 +20,26 @@ function getAuthClient() {
   return auth;
 }
 
+// --- Errores ---
+
+// Devuelve el error marcado como isError y truncado: evita volcar respuestas largas de la API.
+function errorResult(prefix: string, error: any) {
+  const message = String(error?.message ?? error).slice(0, 300);
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: `${prefix}: ${message}` }],
+  };
+}
+
+// Traduce un filtro de texto a la operación de la API ("regex:" activa expresiones regulares).
+function buildFilter(dimension: string, value: string, exclude: boolean) {
+  const isRegex = value.startsWith("regex:");
+  const operator = isRegex
+    ? exclude ? "excludingRegex" : "includingRegex"
+    : exclude ? "notContains" : "contains";
+  return { dimension, operator, expression: isRegex ? value.slice(6) : value };
+}
+
 // --- Server setup ---
 
 const server = new McpServer({
@@ -63,11 +83,7 @@ server.tool(
         content: [{ type: "text", text: `Sites:\n${formatted}` }],
       };
     } catch (error: any) {
-      return {
-        content: [
-          { type: "text", text: `Error listing sites: ${error.message}` },
-        ],
-      };
+      return errorResult("Error listing sites", error);
     }
   }
 );
@@ -111,6 +127,16 @@ server.tool(
       .string()
       .optional()
       .describe("Filter by page URL. Prefix with regex: for regex matching."),
+    excludeQueryFilter: z
+      .string()
+      .optional()
+      .describe(
+        "Exclude search queries (e.g. brand terms). Prefix with regex: for regex matching."
+      ),
+    excludePageFilter: z
+      .string()
+      .optional()
+      .describe("Exclude page URLs. Prefix with regex: for regex matching."),
     countryFilter: z
       .string()
       .optional()
@@ -119,6 +145,20 @@ server.tool(
       .enum(["DESKTOP", "MOBILE", "TABLET"])
       .optional()
       .describe("Filter by device type"),
+    dataState: z
+      .enum(["final", "all"])
+      .optional()
+      .default("final")
+      .describe(
+        "final (default): only finalized data. all: also include fresh, still-changing data from the last days"
+      ),
+    startRow: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .default(0)
+      .describe("Zero-based row offset for paging past rowLimit"),
   },
   async ({
     siteUrl,
@@ -129,8 +169,12 @@ server.tool(
     searchType,
     queryFilter,
     pageFilter,
+    excludeQueryFilter,
+    excludePageFilter,
     countryFilter,
     deviceFilter,
+    dataState,
+    startRow,
   }) => {
     try {
       const dimensionList = dimensions
@@ -140,23 +184,12 @@ server.tool(
       // Build dimension filter groups
       const filters: any[] = [];
 
-      if (queryFilter) {
-        const isRegex = queryFilter.startsWith("regex:");
-        filters.push({
-          dimension: "query",
-          operator: isRegex ? "includingRegex" : "contains",
-          expression: isRegex ? queryFilter.slice(6) : queryFilter,
-        });
-      }
-
-      if (pageFilter) {
-        const isRegex = pageFilter.startsWith("regex:");
-        filters.push({
-          dimension: "page",
-          operator: isRegex ? "includingRegex" : "contains",
-          expression: isRegex ? pageFilter.slice(6) : pageFilter,
-        });
-      }
+      if (queryFilter) filters.push(buildFilter("query", queryFilter, false));
+      if (pageFilter) filters.push(buildFilter("page", pageFilter, false));
+      if (excludeQueryFilter)
+        filters.push(buildFilter("query", excludeQueryFilter, true));
+      if (excludePageFilter)
+        filters.push(buildFilter("page", excludePageFilter, true));
 
       if (countryFilter) {
         filters.push({
@@ -179,8 +212,9 @@ server.tool(
         endDate,
         dimensions: dimensionList,
         rowLimit: Math.min(rowLimit || 100, 25000),
+        startRow: startRow || 0,
         type: searchType || "web",
-        dataState: "all",
+        dataState: dataState || "final",
       };
 
       if (filters.length > 0) {
@@ -220,8 +254,8 @@ server.tool(
 
       const dataRows = rows.map((row: any) => {
         const keys = (row.keys || []).join(" | ");
-        const ctr = (row.ctr * 100).toFixed(2) + "%";
-        const position = row.position.toFixed(1);
+        const ctr = ((row.ctr ?? 0) * 100).toFixed(2) + "%";
+        const position = (row.position ?? 0).toFixed(1);
         return `${keys} | ${row.clicks} | ${row.impressions} | ${ctr} | ${position}`;
       });
 
@@ -231,19 +265,12 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Search Analytics (${startDate} to ${endDate})\n${rows.length} rows returned\n\n${table}`,
+            text: `Search Analytics (${startDate} to ${endDate})\n${rows.length} rows returned (startRow ${startRow || 0}, dataState ${dataState || "final"})\n\n${table}`,
           },
         ],
       };
     } catch (error: any) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error querying search analytics: ${error.message}`,
-          },
-        ],
-      };
+      return errorResult("Error querying search analytics", error);
     }
   }
 );
@@ -323,14 +350,7 @@ server.tool(
         content: [{ type: "text", text: lines.join("\n") }],
       };
     } catch (error: any) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error inspecting URL: ${error.message}`,
-          },
-        ],
-      };
+      return errorResult("Error inspecting URL", error);
     }
   }
 );
@@ -377,14 +397,7 @@ server.tool(
         ],
       };
     } catch (error: any) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error listing sitemaps: ${error.message}`,
-          },
-        ],
-      };
+      return errorResult("Error listing sitemaps", error);
     }
   }
 );

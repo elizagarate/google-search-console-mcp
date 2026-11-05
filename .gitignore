@@ -5,3 +5,4 @@ build/
 !package.json
 !tsconfig.json
 !server.json
+!package-lock.json
